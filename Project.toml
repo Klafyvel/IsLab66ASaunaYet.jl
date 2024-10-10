@@ -1,0 +1,13 @@
+name = "IsLab66ASaunaYet"
+uuid = "88be5a35-d102-466e-9911-37f5ccf25a66"
+authors = ["Hugo Levy-Falk <hugo@klafyvel.me> and contributors"]
+version = "0.1.0"
+
+[compat]
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

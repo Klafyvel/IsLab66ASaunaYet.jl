@@ -8,6 +8,7 @@ using BaseDirs
 using CairoMakie
 using HidApi
 using Preferences
+using MCP2221Driver
 
 
 """
@@ -113,6 +114,32 @@ function _find_sensor()
         return nothing
     end
     return first(respond_with_firmware)
+end
+
+struct TMP117viaMCP2221 end
+processtype(::Type{TMP117viaMCP2221}) = Float64
+function processvalue(t::TMP117viaMCP2221)
+    init()
+    device = open(HidApi.find_device(
+        MCP2221Driver.MCP2221A_DEFAULT_VID, 
+        MCP2221Driver.MCP2221A_DEFAULT_PID
+    ))
+    address = MCP2221Driver.I2CAddress(0x48)
+    MCP2221Driver.query(device, MCP2221Driver.I2CWriteDataCommand(
+        address, 
+        MCP2221Driver.I2CSingle, 
+        [0x00]
+    ))
+    MCP2221Driver.query(device, MCP2221Driver.I2CReadDataCommand(
+        address, 
+        MCP2221Driver.I2CSingle, 
+        2
+    ))
+    response = MCP2221Driver.query(device, MCP2221Driver.GetI2CDataCommand())
+    temp = 7.8125e-3 * ntoh(first(reinterpret(UInt16, response.data)))
+    Base.close(device)
+    shutdown()
+    return temp
 end
 
 const PROJECT = BaseDirs.Project("IsLab66ASaunaYet", org="Unifi-CNR")
@@ -346,7 +373,7 @@ function temperature(bot, chat_id, args)
     df = subset(DataFrame(Arrow.Table(bot.storage)), :time=>ByRow(t->mini≤t<maxi))
     fig = Figure()
     ax = Axis(fig[1,1], xlabel="Date", ylabel="Temperature [°C]", title=title)
-    lines!(ax, df.time, df.temperature)
+    scatterlines!(ax, df.time, df.temperature)
     io = IOBuffer()
     show(io, MIME"image/png"(), fig)
     sendPhoto(bot.client, photo=filename=>io, chat_id=chat_id)
@@ -357,6 +384,14 @@ COMMANDS = Dict([
     "set"=>settings,
     "temp"=>temperature,
 ])
+
+function set_telegram_commands(bot)
+    setMyCommands(bot.client, commands=[
+        Dict(["command"=>"help", "description"=>"Show help."]),
+        Dict(["command"=>"set", "description"=>"Change settings. Example: /set --lower-bound 17 ."]),
+        Dict(["command"=>"temp", "description"=>"Get temperature. Examples: /temp , /temp 2024-10-31T19:30 2024-11-3T:18-15 ."]),
+    ])
+end
 
 function make_callback(bot)
     function callback(update)
@@ -371,19 +406,24 @@ function make_callback(bot)
         text === nothing && return nothing
         startswith(text, "/") || return nothing
         args = split(text[nextind(text, 1):end])
-        parsed = parse_args(args, bot.commandparsesettings)
-        @debug "Parsed arguments" parsed
-        parsed === nothing && return nothing
-        cmd = parsed["%COMMAND%"]
-        chat = get(message, :chat)
-        chat_id = get(chat, :id)
-        COMMANDS[cmd](bot, chat_id, parsed[cmd])
+	try
+		parsed = parse_args(args, bot.commandparsesettings)
+		@debug "Parsed arguments" parsed
+		parsed === nothing && return nothing
+		cmd = parsed["%COMMAND%"]
+		chat = get(message, :chat)
+		chat_id = get(chat, :id)
+		COMMANDS[cmd](bot, chat_id, parsed[cmd])
+	catch e
+		@error "Caught error command." exception=(e,catch_backtrace())
+	end
     end
 end
 
 function main(_=nothing)
-    bot = Bot(TEMPer())
+    bot = Bot(TMP117viaMCP2221())
     @info "Starting temperature monitoring. Please do not close this window."
+    set_telegram_commands(bot)
     task_cron = Threads.@spawn crontask(bot)
     task_bot = Threads.@spawn run_bot(make_callback(bot))
     if isinteractive()
